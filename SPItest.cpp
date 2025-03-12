@@ -7,6 +7,7 @@
 #include <unistd.h> // Для usleep
 #include <cstring> // Для memcpy
 #include <iomanip> //  Добавлен для setw
+#include <csignal> // Для обработки сигналов
 
 // Linux-специфичные заголовки для SPI
 #include <fcntl.h> // Для open
@@ -15,59 +16,58 @@
 
 // Класс для управления SPI
 class SpiController {
-public:
-    SpiController(const std::string& device) : devicePath(device) {
-        openDevice();
-    }
-
-    ~SpiController() {
-        closeDevice();
-    }
-
-    void setSpeed(uint32_t speedHz) {
-        if (ioctl(fileDescriptor, SPI_IOC_WR_MAX_SPEED_HZ, &speedHz) == -1) {
-            throw std::runtime_error("Ошибка при установке скорости SPI");
+    public:
+        SpiController(const std::string& device) : devicePath(device) {
+            openDevice();
         }
-    }
-
-    std::vector<uint8_t> transfer(const std::vector<uint8_t>& txData) {
-        std::vector<uint8_t> rxData(txData.size());
-
-        spi_ioc_transfer transfer;
-        memset(&transfer, 0, sizeof(transfer)); // Инициализация нулями
-
-        transfer.tx_buf = (unsigned long)txData.data();
-        transfer.rx_buf = (unsigned long)rxData.data();
-        transfer.len = txData.size();
-        transfer.speed_hz = 0; // Используем установленную скорость
-
-        if (ioctl(fileDescriptor, SPI_IOC_MESSAGE(1), &transfer) < 0) {
-            throw std::runtime_error("Ошибка при передаче SPI");
+    
+        ~SpiController() {
+            closeDevice();
         }
-
-        return rxData;
-    }
-
-private:
-    void openDevice() {
-        fileDescriptor = open(devicePath.c_str(), O_RDWR);
-        if (fileDescriptor < 0) {
-            std::stringstream ss;
-            ss << "Ошибка открытия устройства SPI: " << devicePath;
-            throw std::runtime_error(ss.str());
+    
+        void setSpeed(uint32_t speedHz) {
+            if (ioctl(fileDescriptor, SPI_IOC_WR_MAX_SPEED_HZ, &speedHz) == -1) {
+                throw std::runtime_error("Ошибка при установке скорости SPI");
+            }
         }
-    }
-
-    void closeDevice() {
-        if (fileDescriptor != -1) {
-            close(fileDescriptor);
+    
+        std::vector<uint8_t> transfer(const std::vector<uint8_t>& txData) {
+            std::vector<uint8_t> rxData(txData.size());
+        
+            spi_ioc_transfer transfer;
+            memset(&transfer, 0, sizeof(transfer)); // Инициализация нулями
+        
+            transfer.tx_buf = (unsigned long)txData.data();
+            transfer.rx_buf = (unsigned long)rxData.data();
+            transfer.len = txData.size();
+            transfer.speed_hz = 0; // Используем установленную скорость
+        
+            if (ioctl(fileDescriptor, SPI_IOC_MESSAGE(1), &transfer) < 0) {
+                throw std::runtime_error("Ошибка при передаче SPI");
+            }
+        
+            return rxData;
         }
-    }
-
-    std::string devicePath;
-    int fileDescriptor = -1;
+    
+    private:
+        void openDevice() {
+            fileDescriptor = open(devicePath.c_str(), O_RDWR);
+            if (fileDescriptor < 0) {
+                std::stringstream ss;
+                ss << "Ошибка открытия устройства SPI: " << devicePath;
+                throw std::runtime_error(ss.str());
+            }
+        }
+    
+        void closeDevice() {
+            if (fileDescriptor != -1) {
+                close(fileDescriptor);
+            }
+        }
+    
+        std::string devicePath;
+        int fileDescriptor = -1;
 };
-
 
 void freqTest(SpiController& spi) {
     std::vector<uint8_t> send = {'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'};
@@ -106,13 +106,48 @@ void freqTest(SpiController& spi) {
     }
 }
 
+volatile sig_atomic_t stop = 0;
 
-int main() {
+void handleSignal(int signal) {
+    stop = 1;
+}
+
+void continuousTransfer(SpiController& spi) {
+    std::vector<uint8_t> send = {0xAA}; // 10101010 in binary
+
+    signal(SIGINT, handleSignal); // Register signal handler for Ctrl+C
+
+    uint32_t speedHz = 100000; // 100 kHz
+    spi.setSpeed(speedHz); // Установить тактовую частоту
+
+    while (!stop) {
+        spi.transfer(send);
+        sleep(1); // Wait for 1 second
+    }
+}
+
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << " <mode>" << std::endl;
+        std::cerr << "Mode 1: Frequency test" << std::endl;
+        std::cerr << "Mode 2: Continuous transfer" << std::endl;
+        return 1;
+    }
+
+    int mode = std::stoi(argv[1]);
     std::string device = "/dev/spidev1.0"; // Укажите устройство SPI
 
     try {
         SpiController spi(device);
-        freqTest(spi);
+
+        if (mode == 1) {
+            freqTest(spi);
+        } else if (mode == 2) {
+            continuousTransfer(spi);
+        } else {
+            std::cerr << "Invalid mode selected" << std::endl;
+            return 1;
+        }
     } catch (const std::exception& e) {
         std::cerr << "Ошибка: " << e.what() << std::endl;
         return 1;
