@@ -4,15 +4,18 @@
 #include <string>
 #include <sstream>
 #include <stdexcept>
-#include <unistd.h> // Для usleep
-#include <cstring> // Для memcpy
-#include <iomanip> //  Добавлен для setw
-#include <csignal> // Для обработки сигналов
+#include <unistd.h> 
+#include <cstring> 
+#include <iomanip> 
+#include <csignal>
+#include <nlohmann/json.hpp>
 
 // Linux-специфичные заголовки для SPI
-#include <fcntl.h> // Для open
-#include <sys/ioctl.h> // Для ioctl
-#include <linux/spi/spidev.h> // Для структуры spi_ioc_transfer
+#include <fcntl.h> 
+#include <sys/ioctl.h> 
+#include <linux/spi/spidev.h>
+
+using json = nlohmann::json;
 
 // Класс для управления SPI
 class SpiController {
@@ -35,12 +38,12 @@ class SpiController {
             std::vector<uint8_t> rxData(txData.size());
 
             spi_ioc_transfer transfer;
-            memset(&transfer, 0, sizeof(transfer)); // Инициализация нулями
+            memset(&transfer, 0, sizeof(transfer));
 
             transfer.tx_buf = (unsigned long)txData.data();
             transfer.rx_buf = (unsigned long)rxData.data();
             transfer.len = txData.size();
-            transfer.speed_hz = 0; // Используем установленную скорость
+            transfer.speed_hz = 0;
 
             if (ioctl(fileDescriptor, SPI_IOC_MESSAGE(1), &transfer) < 0) {
                 throw std::runtime_error("Ошибка при передаче SPI");
@@ -127,19 +130,47 @@ void continuousTransfer(SpiController& spi) {
 	uint32_t value_1 = 0x75BCD15;
 	uint32_t value_2 = 0x3ADE68B1;
 	uint32_t value_3 = 0xACACAAAA;
-    std::vector<uint32_t> values = {value_1, value_2, value_3}; // Пример значений
+    std::vector<uint32_t> values = {value_1, value_2, value_3};
 
-    // Создаем сообщение из значений
     std::vector<uint8_t> send = createMessage(values);
 
-    signal(SIGINT, handleSignal); // Register signal handler for Ctrl+C
+    signal(SIGINT, handleSignal);
 
-    uint32_t speedHz = 500000; // 500 kHz
-    spi.setSpeed(speedHz); // Установить тактовую частоту
+    uint32_t speedHz = 1000000; // 1 MHz
+    spi.setSpeed(speedHz);
 
     while (!stop) {
         spi.transfer(send);
-        sleep(0.1); // Wait for 1 second
+        sleep(0.5);
+    }
+}
+
+void jsonTransfer(SpiController& spi) {
+    std::string filename = "data.json";
+    std::ifstream file(filename);
+    json j;
+
+    if (!file.is_open()) {
+        j = {
+            {"values", {0x75BCD15, 0x3ADE68B1, 0xACACAAAA}}
+        };
+        std::ofstream o(filename);
+        o << std::setw(4) << j << std::endl;
+    } else {
+        file >> j;
+    }
+
+    std::vector<uint32_t> values = j["values"].get<std::vector<uint32_t>>();
+    std::vector<uint8_t> send = createMessage(values);
+
+    signal(SIGINT, handleSignal);
+
+    uint32_t speedHz = 1000000; // 1 MHz
+    spi.setSpeed(speedHz);
+
+    while (!stop) {
+        spi.transfer(send);
+        sleep(0.5);
     }
 }
 
@@ -148,11 +179,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " <mode>" << std::endl;
         std::cerr << "Mode 1: Frequency test" << std::endl;
         std::cerr << "Mode 2: Continuous transfer" << std::endl;
+        std::cerr << "Mode 3: JSON transfer" << std::endl;
         return 1;
     }
 
     int mode = std::stoi(argv[1]);
-    std::string device = "/dev/spidev1.0"; // Укажите устройство SPI
+    std::string device = "/dev/spidev1.0";
 
     try {
         SpiController spi(device);
@@ -161,6 +193,8 @@ int main(int argc, char* argv[]) {
             freqTest(spi);
         } else if (mode == 2) {
             continuousTransfer(spi);
+        } else if (mode == 3) {
+            jsonTransfer(spi);
         } else {
             std::cerr << "Invalid mode selected" << std::endl;
             return 1;
